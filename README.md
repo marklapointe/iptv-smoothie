@@ -74,6 +74,8 @@ go test ./internal/hub/ ./internal/ratelimit/ -race -count=1
 - Multi-source IPTV M3U + **HDHomeRun** lineup import
 - Live hub fan-out + per-source concurrency limits
 - Progressive VOD **cache / purgatory / promote** (movies vs `tv/Season NN`)
-- Rewritten `playlist.m3u` + `/play/{id}`
-- Bootstrap admin UI with `data-testid` hooks (Playwright-ready)
-- Emby API refresh still next; full Angular app still next
+- Rewritten `playlist.m3u` + `/play/{id}` (+ Range from cache)
+- Emby config + library refresh after promote + folder list API
+- Bootstrap admin UI + **Playwright e2e** (`web/e2e`)
+- Lab: **319k channels ingested in ~55s** — see `docs/LAB.md`
+- Full Angular SPA still optional next

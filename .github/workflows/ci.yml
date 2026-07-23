@@ -20,3 +20,26 @@ jobs:
         run: go test ./internal/hub/ ./internal/stream/ ./internal/ratelimit/ -race -count=1 -timeout 120s
       - name: Build
         run: go build -o /tmp/smoothie ./cmd/smoothie
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Playwright
+        working-directory: web/e2e
+        run: npm ci || npm install
+      - name: Install browsers
+        working-directory: web/e2e
+        run: npx playwright install --with-deps chromium
+      - name: E2E smoke
+        working-directory: web/e2e
+        env:
+          CI: "true"
+        run: npx playwright test

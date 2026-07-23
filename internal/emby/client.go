@@ -79,14 +79,22 @@ func (c *Client) MediaFolders(ctx context.Context) ([]MediaFolder, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("emby: media folders status %d", resp.StatusCode)
 	}
+	// Emby may return {Items:[...]} or a bare array depending on version.
+	var raw json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, err
+	}
 	var wrap struct {
 		Items []MediaFolder `json:"Items"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&wrap); err != nil {
-		// some builds return bare array
+	if err := json.Unmarshal(raw, &wrap); err == nil && wrap.Items != nil {
+		return wrap.Items, nil
+	}
+	var list []MediaFolder
+	if err := json.Unmarshal(raw, &list); err != nil {
 		return nil, err
 	}
-	return wrap.Items, nil
+	return list, nil
 }
 
 // RefreshLibrary starts a full library scan.

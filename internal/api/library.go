@@ -133,6 +133,28 @@ func (s *Server) handleEmbyStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleEmbyFolders(w http.ResponseWriter, r *http.Request) {
+	base, err := s.DB.GetSetting("emby.url")
+	if err != nil || base == "" {
+		writeErr(w, http.StatusBadRequest, "emby not configured")
+		return
+	}
+	key, err := s.DB.GetSetting("emby.api_key")
+	if err != nil || key == "" {
+		writeErr(w, http.StatusBadRequest, "emby api key missing")
+		return
+	}
+	cli := emby.New(base, key)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	folders, err := cli.MediaFolders(ctx)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": folders})
+}
+
 type libraryRootReq struct {
 	Kind   string `json:"kind"` // movie | tv
 	FSPath string `json:"fs_path"`

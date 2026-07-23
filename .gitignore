@@ -6,6 +6,7 @@
 
 # Data & secrets
 /data/
+/data-e2e/
 *.db
 *.db-journal
 .env
@@ -18,10 +19,14 @@
 *.swp
 .DS_Store
 
-# Node / Angular
+# Node / Angular / Playwright
 web/node_modules/
 web/dist/
 web/.angular/
+web/e2e/node_modules/
+web/e2e/test-results/
+web/e2e/playwright-report/
+web/e2e/blob-report/
 
 # Lab / local
 /tmp/

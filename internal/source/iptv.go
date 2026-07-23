@@ -148,10 +148,20 @@ func (r *Refresher) ingest(src *store.Source, body io.Reader, fetchedURL string)
 		return nil
 	}
 
+	seen := make(map[string]struct{}, 1024)
 	err := playlist.Parse(body, func(e playlist.Entry) error {
+		rk := e.RemoteKey
+		if rk == "" {
+			rk = playlist.RemoteKey(e.URL, e.Name, e.Group)
+		}
+		if _, dup := seen[rk]; dup {
+			// Identical entry already queued this refresh — skip
+			return nil
+		}
+		seen[rk] = struct{}{}
 		ch := store.Channel{
 			SourceID:  src.ID,
-			RemoteKey: e.RemoteKey,
+			RemoteKey: rk,
 			Name:      e.Name,
 			GroupName: e.Group,
 			Kind:      string(e.Kind),

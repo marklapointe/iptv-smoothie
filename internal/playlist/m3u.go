@@ -152,27 +152,20 @@ func stripQuery(raw string) string {
 	return raw
 }
 
-// RemoteKey builds a stable key for a stream URL (path-focused; ignores host churn when possible).
+// RemoteKey builds a stable unique key for an M3U entry.
+// Includes name+group so duplicate stream URLs (common in big catalogs) do not collide.
 func RemoteKey(streamURL, name, group string) string {
 	u, err := url.Parse(streamURL)
-	if err != nil || u.Path == "" {
-		sum := sha1.Sum([]byte(streamURL + "|" + name + "|" + group))
-		return hex.EncodeToString(sum[:12])
-	}
-	// Prefer last path segment(s) which are often the stream id / filename
-	p := strings.Trim(u.Path, "/")
-	parts := strings.Split(p, "/")
-	if len(parts) >= 1 {
-		tail := parts[len(parts)-1]
-		if len(parts) >= 3 {
-			// user/pass/id or movie/user/pass/file
-			tail = strings.Join(parts[len(parts)-3:], "/")
+	pathPart := streamURL
+	if err == nil && u.Path != "" {
+		// Prefer path (stable across host/portal churn) + query-less identity
+		pathPart = strings.Trim(u.Path, "/")
+		if u.RawQuery != "" {
+			pathPart += "?" + u.RawQuery
 		}
-		sum := sha1.Sum([]byte(tail))
-		return hex.EncodeToString(sum[:12])
 	}
-	sum := sha1.Sum([]byte(streamURL))
-	return hex.EncodeToString(sum[:12])
+	sum := sha1.Sum([]byte(pathPart + "\n" + name + "\n" + group))
+	return hex.EncodeToString(sum[:16])
 }
 
 // RewriteItem is a channel bound for local playlist export.
