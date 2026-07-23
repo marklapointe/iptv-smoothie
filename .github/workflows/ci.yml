@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - name: Test
+        run: go test ./... -count=1 -timeout 120s
+      - name: Race (critical packages)
+        run: go test ./internal/hub/ ./internal/stream/ ./internal/ratelimit/ -race -count=1 -timeout 120s
+      - name: Build
+        run: go build -o /tmp/smoothie ./cmd/smoothie

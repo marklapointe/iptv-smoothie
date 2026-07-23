@@ -145,6 +145,9 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if res.ContentLength > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(res.ContentLength, 10))
 	}
+	if res.ContentRange != "" {
+		w.Header().Set("Content-Range", res.ContentRange)
+	}
 	w.Header().Set("Accept-Ranges", "bytes")
 	status := res.StatusCode
 	if status == 0 {

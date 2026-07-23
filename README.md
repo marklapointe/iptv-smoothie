@@ -44,6 +44,11 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   localhost:8787/api/sources/{id}/refresh
 
+# Async refresh for huge catalogs (~300k rows)
+JOB=$(curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  localhost:8787/api/sources/{id}/refresh/async | jq -r .id)
+curl -s -H "Authorization: Bearer $TOKEN" localhost:8787/api/jobs/refresh/$JOB
+
 curl -s -X POST -H "Authorization: Bearer $TOKEN" \
   localhost:8787/api/setup/complete
 ```

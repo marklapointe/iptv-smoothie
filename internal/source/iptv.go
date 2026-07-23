@@ -128,13 +128,13 @@ func (r *Refresher) refreshFromURL(ctx context.Context, src *store.Source, porta
 }
 
 func (r *Refresher) ingest(src *store.Source, body io.Reader, fetchedURL string) (*RefreshResult, error) {
-	// Replace strategy: delete existing channels for source, batch insert
-	if err := r.DB.DeleteChannelsBySource(src.ID); err != nil {
+	// Replace strategy: bulk delete then large batched inserts (WAL mode).
+	if err := r.DB.DeleteChannelsBySourceFast(src.ID); err != nil {
 		return nil, err
 	}
 
 	res := &RefreshResult{SourceID: src.ID, FetchedURL: redactURL(fetchedURL)}
-	const batchSize = 500
+	const batchSize = 2000
 	batch := make([]store.Channel, 0, batchSize)
 
 	flush := func() error {

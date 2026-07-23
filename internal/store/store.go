@@ -20,13 +20,19 @@ func Open(path string) (*DB, error) {
 	if path == "" {
 		return nil, errors.New("store: empty database path")
 	}
-	gdb, err := gorm.Open(sqlite.Open(path), &gorm.Config{
+	// pure-Go SQLite; enable WAL for concurrent read during bulk ingest
+	dsn := path + "?_pragma=busy_timeout(5000)"
+	gdb, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store: open sqlite: %w", err)
 	}
 	db := &DB{gorm: gdb}
+	if err := db.applyPragmas(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if err := db.migrate(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -36,6 +42,26 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("store: default admin: %w", err)
 	}
 	return db, nil
+}
+
+func (db *DB) applyPragmas() error {
+	sqlDB, err := db.gorm.DB()
+	if err != nil {
+		return err
+	}
+	pragmas := []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA temp_store=MEMORY",
+		"PRAGMA cache_size=-65536", // 64MB
+		"PRAGMA foreign_keys=ON",
+	}
+	for _, p := range pragmas {
+		if _, err := sqlDB.Exec(p); err != nil {
+			return fmt.Errorf("store: %s: %w", p, err)
+		}
+	}
+	return nil
 }
 
 func (db *DB) migrate() error {
@@ -49,6 +75,10 @@ func (db *DB) migrate() error {
 	); err != nil {
 		return fmt.Errorf("store: migrate: %w", err)
 	}
+	// Extra indexes for large catalogs (safe if already present)
+	_ = db.gorm.Exec(`CREATE INDEX IF NOT EXISTS idx_channels_name ON channels(name)`).Error
+	_ = db.gorm.Exec(`CREATE INDEX IF NOT EXISTS idx_channels_source_kind ON channels(source_id, kind)`).Error
+	_ = db.gorm.Exec(`CREATE INDEX IF NOT EXISTS idx_channels_source_group ON channels(source_id, group_name)`).Error
 	return nil
 }
 
@@ -133,6 +163,7 @@ func (db *DB) DeleteChannelsBySource(sourceID string) error {
 }
 
 // CreateChannels batch-inserts channels (IDs generated when empty).
+// Tuned for large M3U catalogs (hundreds of thousands of rows).
 func (db *DB) CreateChannels(chs []Channel) error {
 	if len(chs) == 0 {
 		return nil
@@ -145,7 +176,14 @@ func (db *DB) CreateChannels(chs []Channel) error {
 			chs[i].Kind = ChannelKindLive
 		}
 	}
-	return db.gorm.CreateInBatches(chs, 500).Error
+	// Skip per-batch outer transactions; WAL + big batches ingest much faster.
+	return db.gorm.Session(&gorm.Session{SkipDefaultTransaction: true}).
+		CreateInBatches(chs, 2000).Error
+}
+
+// DeleteChannelsBySourceFast uses a single SQL delete (large catalogs).
+func (db *DB) DeleteChannelsBySourceFast(sourceID string) error {
+	return db.gorm.Exec("DELETE FROM channels WHERE source_id = ?", sourceID).Error
 }
 
 // GetChannel loads a channel by ID.
@@ -170,8 +208,10 @@ func (db *DB) ListChannels(sourceID, kind, q string, limit, offset int) ([]Chann
 		tx = tx.Where("kind = ?", kind)
 	}
 	if q != "" {
+		// Prefer prefix match (can use name index) then fallback contains.
+		prefix := q + "%"
 		like := "%" + q + "%"
-		tx = tx.Where("name LIKE ? OR group_name LIKE ?", like, like)
+		tx = tx.Where("name LIKE ? OR name LIKE ? OR group_name LIKE ?", prefix, like, like)
 	}
 	var list []Channel
 	err := tx.Order("name ASC").Limit(limit).Offset(offset).Find(&list).Error

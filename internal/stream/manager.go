@@ -116,70 +116,83 @@ type VODResult struct {
 	Body          io.ReadCloser
 	ContentType   string
 	ContentLength int64 // -1 if unknown
+	ContentRange  string
 	CacheHit      bool
 	StatusCode    int
 }
 
 // OpenVOD serves VOD via local cache when possible (progressive fill on miss).
-// Range requests on incomplete cache fall back to direct upstream proxy.
+// Range on a validated cache file is served locally (no upstream).
 func (m *Manager) OpenVOD(ctx context.Context, ch *store.Channel, rangeHeader string) (*VODResult, error) {
 	ext := guessExt(ch.StreamURL, ch.Name)
 	key := ch.SourceID + ":" + ch.ID
 
-	// Cache path: no Range (or full-file) — progressive play + disk fill
-	if m.Cache != nil && rangeHeader == "" {
-		// Hit?
+	if m.Cache != nil {
 		if o, err := m.Cache.Get(key); err == nil && o.State == cache.StateValidated {
-			r, err := m.openCachedFile(o.Path)
-			if err == nil {
-				return &VODResult{
-					Body: r, ContentType: contentTypeForExt(ext),
-					ContentLength: o.Size, CacheHit: true, StatusCode: http.StatusOK,
-				}, nil
+			// Full file or Range from disk
+			if rangeHeader == "" {
+				r, err := m.openCachedFile(o.Path)
+				if err == nil {
+					return &VODResult{
+						Body: r, ContentType: contentTypeForExt(ext),
+						ContentLength: o.Size, CacheHit: true, StatusCode: http.StatusOK,
+					}, nil
+				}
+			} else if rng, ok := parseRangeHeader(rangeHeader, o.Size); ok {
+				r, length, cr, err := openFileRange(o.Path, rng, o.Size)
+				if err == nil {
+					return &VODResult{
+						Body: r, ContentType: contentTypeForExt(ext),
+						ContentLength: length, ContentRange: cr,
+						CacheHit: true, StatusCode: http.StatusPartialContent,
+					}, nil
+				}
 			}
 		}
 
-		src, err := m.DB.GetSource(ch.SourceID)
-		if err != nil {
-			return nil, err
-		}
-		pool := m.poolFor(src)
-		lease, err := pool.Acquire(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("stream: no upstream slot: %w", err)
-		}
+		// Miss / incomplete: progressive fill only when no Range
+		if rangeHeader == "" {
+			src, err := m.DB.GetSource(ch.SourceID)
+			if err != nil {
+				return nil, err
+			}
+			pool := m.poolFor(src)
+			lease, err := pool.Acquire(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("stream: no upstream slot: %w", err)
+			}
 
-		upBody, expected, ct, err := m.fetchUpstreamBody(ctx, ch, "", src)
-		if err != nil {
-			lease.Release()
-			return nil, err
-		}
-		// Rate-limit upstream before tee into cache
-		var lim source.IPTVLimits
-		if src.LimitsJSON != "" {
-			_ = json.Unmarshal([]byte(src.LimitsJSON), &lim)
-		}
-		body := io.ReadCloser(upBody)
-		if lim.MaxUpstreamBPS > 0 {
-			body = &rateLimitedBody{r: body, lim: ratelimit.NewByteLimiter(lim.MaxUpstreamBPS)}
-		}
-		body = &leasedBody{ReadCloser: body, lease: lease}
+			upBody, expected, ct, err := m.fetchUpstreamBody(ctx, ch, "", src)
+			if err != nil {
+				lease.Release()
+				return nil, err
+			}
+			var lim source.IPTVLimits
+			if src.LimitsJSON != "" {
+				_ = json.Unmarshal([]byte(src.LimitsJSON), &lim)
+			}
+			body := io.ReadCloser(upBody)
+			if lim.MaxUpstreamBPS > 0 {
+				body = &rateLimitedBody{r: body, lim: ratelimit.NewByteLimiter(lim.MaxUpstreamBPS)}
+			}
+			body = &leasedBody{ReadCloser: body, lease: lease}
 
-		_, reader, err := m.Cache.OpenOrFill(ctx, key, body, expected, ext)
-		if err != nil {
-			_ = body.Close()
-			return nil, err
+			_, reader, err := m.Cache.OpenOrFill(ctx, key, body, expected, ext)
+			if err != nil {
+				_ = body.Close()
+				return nil, err
+			}
+			if ct == "" {
+				ct = contentTypeForExt(ext)
+			}
+			return &VODResult{
+				Body: reader, ContentType: ct, ContentLength: expected,
+				CacheHit: false, StatusCode: http.StatusOK,
+			}, nil
 		}
-		if ct == "" {
-			ct = contentTypeForExt(ext)
-		}
-		return &VODResult{
-			Body: reader, ContentType: ct, ContentLength: expected,
-			CacheHit: false, StatusCode: http.StatusOK,
-		}, nil
 	}
 
-	// Direct / Range proxy (no cache tee)
+	// Direct / Range proxy (no cache tee or incomplete cache + Range)
 	return m.openVODDirect(ctx, ch, rangeHeader)
 }
 

@@ -59,6 +59,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sources", s.requireAuth(s.handleListSources))
 	mux.HandleFunc("POST /api/sources", s.requireAuth(s.handleCreateSource))
 	mux.HandleFunc("POST /api/sources/{id}/refresh", s.requireAuth(s.handleRefreshSource))
+	mux.HandleFunc("POST /api/sources/{id}/refresh/async", s.requireAuth(s.handleRefreshSourceAsync))
+	mux.HandleFunc("GET /api/jobs/refresh/{id}", s.requireAuth(s.handleRefreshJob))
 	mux.HandleFunc("GET /api/channels", s.requireAuth(s.handleListChannels))
 	mux.HandleFunc("GET /playlist.m3u", s.handlePlaylist)
 	mux.HandleFunc("GET /play/{id}", s.handlePlay)
