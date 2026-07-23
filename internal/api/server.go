@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mlapointe/smoothie/internal/cache"
 	"github.com/mlapointe/smoothie/internal/store"
 	"github.com/mlapointe/smoothie/internal/stream"
 )
@@ -14,10 +15,16 @@ import (
 type Server struct {
 	DB      *store.DB
 	Streams *stream.Manager
+	Cache   *cache.Cache
 	BaseURL string // public base for rewritten playlists, e.g. http://127.0.0.1:8787
 
 	mu       sync.Mutex
 	sessions map[string]session
+}
+
+// ServerOptions optional deps for New.
+type ServerOptions struct {
+	Cache *cache.Cache
 }
 
 type session struct {
@@ -26,10 +33,15 @@ type session struct {
 }
 
 // New constructs an API server.
-func New(db *store.DB) *Server {
+func New(db *store.DB, opts ...ServerOptions) *Server {
+	var c *cache.Cache
+	if len(opts) > 0 {
+		c = opts[0].Cache
+	}
 	return &Server{
 		DB:       db,
-		Streams:  stream.New(db),
+		Cache:    c,
+		Streams:  stream.New(db, stream.Options{Cache: c}),
 		sessions: make(map[string]session),
 	}
 }
@@ -51,6 +63,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /playlist.m3u", s.handlePlaylist)
 	mux.HandleFunc("GET /play/{id}", s.handlePlay)
 	mux.HandleFunc("GET /api/sessions", s.requireAuth(s.handleSessions))
+	mux.HandleFunc("GET /api/cache/stats", s.requireAuth(s.handleCacheStats))
+	mux.HandleFunc("POST /api/channels/{id}/promote", s.requireAuth(s.handlePromote))
+	mux.HandleFunc("POST /api/library/roots", s.requireAuth(s.handleSetLibraryRoot))
+	mux.HandleFunc("GET /api/library/roots", s.requireAuth(s.handleListLibraryRoots))
 	return mux
 }
 

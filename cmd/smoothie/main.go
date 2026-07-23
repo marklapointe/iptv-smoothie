@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/mlapointe/smoothie/internal/api"
+	"github.com/mlapointe/smoothie/internal/cache"
 	"github.com/mlapointe/smoothie/internal/config"
 	"github.com/mlapointe/smoothie/internal/store"
 )
@@ -28,7 +29,18 @@ func main() {
 	}
 	defer db.Close()
 
-	srv := api.New(db)
+	cacheRoot := filepath.Join(cfg.DataDir, "media-cache")
+	libRoot := filepath.Join(cfg.DataDir, "library")
+	cch, err := cache.New(cache.Config{
+		Root:        cacheRoot,
+		LibraryRoot: libRoot,
+		MaxBytes:    200 << 30,
+	})
+	if err != nil {
+		log.Fatalf("cache: %v", err)
+	}
+
+	srv := api.New(db, api.ServerOptions{Cache: cch})
 	srv.BaseURL = "http://" + cfg.ListenAddr
 	apiHandler := srv.Handler()
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

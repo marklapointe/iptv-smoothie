@@ -124,28 +124,34 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// VOD: progressive proxy with optional rate limit + Range
-	resp, err := s.Streams.OpenVOD(r.Context(), ch, r.Header.Get("Range"))
+	// VOD: progressive cache fill (or direct Range proxy)
+	res, err := s.Streams.OpenVOD(r.Context(), ch, r.Header.Get("Range"))
 	if err != nil {
 		writeErr(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer res.Body.Close()
 
-	ct := resp.Header.Get("Content-Type")
+	ct := res.ContentType
 	if ct == "" {
 		ct = "video/mp4"
 	}
 	w.Header().Set("Content-Type", ct)
-	if cl := resp.Header.Get("Content-Length"); cl != "" {
-		w.Header().Set("Content-Length", cl)
+	if res.CacheHit {
+		w.Header().Set("X-Smoothie-Cache", "HIT")
+	} else {
+		w.Header().Set("X-Smoothie-Cache", "MISS")
 	}
-	if cr := resp.Header.Get("Content-Range"); cr != "" {
-		w.Header().Set("Content-Range", cr)
+	if res.ContentLength > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(res.ContentLength, 10))
 	}
 	w.Header().Set("Accept-Ranges", "bytes")
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	status := res.StatusCode
+	if status == 0 {
+		status = http.StatusOK
+	}
+	w.WriteHeader(status)
+	_, _ = io.Copy(w, res.Body)
 }
 
 func looksLikeVODURL(u string) bool {

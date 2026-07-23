@@ -6,28 +6,37 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/mlapointe/smoothie/internal/cache"
 	"github.com/mlapointe/smoothie/internal/hub"
 	"github.com/mlapointe/smoothie/internal/ratelimit"
 	"github.com/mlapointe/smoothie/internal/source"
 	"github.com/mlapointe/smoothie/internal/store"
 )
 
-// Manager coordinates upstream pools and live fan-out.
+// Manager coordinates upstream pools, live fan-out, and VOD cache.
 type Manager struct {
 	DB     *store.DB
 	Hub    *hub.Hub
+	Cache  *cache.Cache
 	Client *http.Client
 
 	mu    sync.Mutex
 	pools map[string]*ratelimit.Pool // sourceID -> pool
 }
 
+// Options configures the stream manager.
+type Options struct {
+	Cache *cache.Cache
+}
+
 // New creates a stream manager.
-func New(db *store.DB) *Manager {
-	return &Manager{
+func New(db *store.DB, opts ...Options) *Manager {
+	m := &Manager{
 		DB:  db,
 		Hub: hub.New(hub.Options{IdleGrace: 3 * time.Second}),
 		Client: &http.Client{
@@ -36,6 +45,10 @@ func New(db *store.DB) *Manager {
 		},
 		pools: make(map[string]*ratelimit.Pool),
 	}
+	if len(opts) > 0 {
+		m.Cache = opts[0].Cache
+	}
+	return m
 }
 
 func (m *Manager) poolFor(src *store.Source) *ratelimit.Pool {
@@ -98,9 +111,79 @@ func (m *Manager) OpenLive(ctx context.Context, ch *store.Channel) (io.ReadClose
 	return sub, nil
 }
 
-// OpenVOD proxies a VOD stream with optional rate limit (progressive).
-// Caller must Close resp.Body; that releases the upstream pool lease.
-func (m *Manager) OpenVOD(ctx context.Context, ch *store.Channel, rangeHeader string) (*http.Response, error) {
+// VODResult is a progressive VOD body (cache hit or upstream fill).
+type VODResult struct {
+	Body          io.ReadCloser
+	ContentType   string
+	ContentLength int64 // -1 if unknown
+	CacheHit      bool
+	StatusCode    int
+}
+
+// OpenVOD serves VOD via local cache when possible (progressive fill on miss).
+// Range requests on incomplete cache fall back to direct upstream proxy.
+func (m *Manager) OpenVOD(ctx context.Context, ch *store.Channel, rangeHeader string) (*VODResult, error) {
+	ext := guessExt(ch.StreamURL, ch.Name)
+	key := ch.SourceID + ":" + ch.ID
+
+	// Cache path: no Range (or full-file) — progressive play + disk fill
+	if m.Cache != nil && rangeHeader == "" {
+		// Hit?
+		if o, err := m.Cache.Get(key); err == nil && o.State == cache.StateValidated {
+			r, err := m.openCachedFile(o.Path)
+			if err == nil {
+				return &VODResult{
+					Body: r, ContentType: contentTypeForExt(ext),
+					ContentLength: o.Size, CacheHit: true, StatusCode: http.StatusOK,
+				}, nil
+			}
+		}
+
+		src, err := m.DB.GetSource(ch.SourceID)
+		if err != nil {
+			return nil, err
+		}
+		pool := m.poolFor(src)
+		lease, err := pool.Acquire(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("stream: no upstream slot: %w", err)
+		}
+
+		upBody, expected, ct, err := m.fetchUpstreamBody(ctx, ch, "", src)
+		if err != nil {
+			lease.Release()
+			return nil, err
+		}
+		// Rate-limit upstream before tee into cache
+		var lim source.IPTVLimits
+		if src.LimitsJSON != "" {
+			_ = json.Unmarshal([]byte(src.LimitsJSON), &lim)
+		}
+		body := io.ReadCloser(upBody)
+		if lim.MaxUpstreamBPS > 0 {
+			body = &rateLimitedBody{r: body, lim: ratelimit.NewByteLimiter(lim.MaxUpstreamBPS)}
+		}
+		body = &leasedBody{ReadCloser: body, lease: lease}
+
+		_, reader, err := m.Cache.OpenOrFill(ctx, key, body, expected, ext)
+		if err != nil {
+			_ = body.Close()
+			return nil, err
+		}
+		if ct == "" {
+			ct = contentTypeForExt(ext)
+		}
+		return &VODResult{
+			Body: reader, ContentType: ct, ContentLength: expected,
+			CacheHit: false, StatusCode: http.StatusOK,
+		}, nil
+	}
+
+	// Direct / Range proxy (no cache tee)
+	return m.openVODDirect(ctx, ch, rangeHeader)
+}
+
+func (m *Manager) openVODDirect(ctx context.Context, ch *store.Channel, rangeHeader string) (*VODResult, error) {
 	src, err := m.DB.GetSource(ch.SourceID)
 	if err != nil {
 		return nil, err
@@ -110,10 +193,35 @@ func (m *Manager) OpenVOD(ctx context.Context, ch *store.Channel, rangeHeader st
 	if err != nil {
 		return nil, fmt.Errorf("stream: no upstream slot: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ch.StreamURL, nil)
+	body, expected, ct, err := m.fetchUpstreamBody(ctx, ch, rangeHeader, src)
 	if err != nil {
 		lease.Release()
 		return nil, err
+	}
+	var lim source.IPTVLimits
+	if src.LimitsJSON != "" {
+		_ = json.Unmarshal([]byte(src.LimitsJSON), &lim)
+	}
+	r := io.ReadCloser(body)
+	if lim.MaxUpstreamBPS > 0 {
+		r = &rateLimitedBody{r: r, lim: ratelimit.NewByteLimiter(lim.MaxUpstreamBPS)}
+	}
+	r = &leasedBody{ReadCloser: r, lease: lease}
+	status := http.StatusOK
+	if rangeHeader != "" {
+		status = http.StatusPartialContent
+	}
+	if ct == "" {
+		ct = contentTypeForExt(guessExt(ch.StreamURL, ch.Name))
+	}
+	return &VODResult{Body: r, ContentType: ct, ContentLength: expected, StatusCode: status}, nil
+}
+
+func (m *Manager) fetchUpstreamBody(ctx context.Context, ch *store.Channel, rangeHeader string, src *store.Source) (io.ReadCloser, int64, string, error) {
+	_ = src
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ch.StreamURL, nil)
+	if err != nil {
+		return nil, -1, "", err
 	}
 	req.Header.Set("User-Agent", "Smoothie/0.1")
 	if rangeHeader != "" {
@@ -121,27 +229,48 @@ func (m *Manager) OpenVOD(ctx context.Context, ch *store.Channel, rangeHeader st
 	}
 	resp, err := m.Client.Do(req)
 	if err != nil {
-		lease.Release()
-		return nil, err
+		return nil, -1, "", err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_ = resp.Body.Close()
-		lease.Release()
-		return nil, fmt.Errorf("stream: upstream status %d", resp.StatusCode)
+		return nil, -1, "", fmt.Errorf("stream: upstream status %d", resp.StatusCode)
 	}
+	var expected int64 = -1
+	if resp.ContentLength > 0 {
+		expected = resp.ContentLength
+	}
+	return resp.Body, expected, resp.Header.Get("Content-Type"), nil
+}
 
-	body := io.ReadCloser(resp.Body)
-	var bps int64
-	var lim source.IPTVLimits
-	if src.LimitsJSON != "" {
-		_ = json.Unmarshal([]byte(src.LimitsJSON), &lim)
-		bps = lim.MaxUpstreamBPS
+func (m *Manager) openCachedFile(path string) (io.ReadCloser, error) {
+	// use progressive open helper via cache package by reading file
+	return openFile(path)
+}
+
+func guessExt(url, name string) string {
+	u := strings.ToLower(url)
+	for _, ext := range []string{".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts"} {
+		if strings.Contains(u, ext) {
+			return ext
+		}
 	}
-	if bps > 0 {
-		body = &rateLimitedBody{r: body, lim: ratelimit.NewByteLimiter(bps)}
+	if e := path.Ext(name); e != "" {
+		return e
 	}
-	resp.Body = &leasedBody{ReadCloser: body, lease: lease}
-	return resp, nil
+	return ".mp4"
+}
+
+func contentTypeForExt(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".mkv":
+		return "video/x-matroska"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".ts":
+		return "video/mp2t"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 // ActiveLiveSessions reports fan-out session count.

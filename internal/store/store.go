@@ -189,6 +189,29 @@ func (db *DB) CountChannels(sourceID string) (int64, error) {
 	return n, err
 }
 
+// CreateLibraryRoot inserts a library root.
+func (db *DB) CreateLibraryRoot(lr *LibraryRoot) error {
+	if lr.ID == "" {
+		lr.ID = uuid.NewString()
+	}
+	if lr.Kind == "" || lr.FSPath == "" {
+		return errors.New("store: library root kind and fs_path required")
+	}
+	return db.gorm.Create(lr).Error
+}
+
+// SaveLibraryRoot updates an existing library root.
+func (db *DB) SaveLibraryRoot(lr *LibraryRoot) error {
+	return db.gorm.Save(lr).Error
+}
+
+// ListLibraryRoots returns all library roots.
+func (db *DB) ListLibraryRoots() ([]LibraryRoot, error) {
+	var list []LibraryRoot
+	err := db.gorm.Order("kind ASC").Find(&list).Error
+	return list, err
+}
+
 // SetSetting upserts a setting value.
 func (db *DB) SetSetting(key, value string) error {
 	if key == "" {
