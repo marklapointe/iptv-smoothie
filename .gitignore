@@ -1,0 +1,33 @@
+# Build
+/smoothie
+/bin/
+/dist/
+*.exe
+
+# Data & secrets
+/data/
+*.db
+*.db-journal
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Node / Angular
+web/node_modules/
+web/dist/
+web/.angular/
+
+# Lab / local
+/tmp/
+*.m3u
+!testutil/fixtures/*.m3u
+
+# Coverage
+coverage.out
+*.coverprofile

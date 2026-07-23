@@ -1,0 +1,21 @@
+#!/bin/sh
+# PROVIDE: smoothie
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="smoothie"
+rcvar="smoothie_enable"
+load_rc_config $name
+
+: ${smoothie_enable:="NO"}
+: ${smoothie_listen:="0.0.0.0:8787"}
+: ${smoothie_data_dir:="/var/db/smoothie"}
+
+pidfile="/var/run/${name}.pid"
+procname="/usr/local/bin/smoothie"
+command="/usr/sbin/daemon"
+command_args="-f -p ${pidfile} /usr/bin/env SMOOTHIE_LISTEN=${smoothie_listen} SMOOTHIE_DATA_DIR=${smoothie_data_dir} SMOOTHIE_DB=${smoothie_data_dir}/smoothie.db ${procname}"
+
+run_rc_command "$1"

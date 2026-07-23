@@ -1,0 +1,27 @@
+# Smoothie example config (process env overrides most of these later).
+# Secrets: never commit real portal passwords or Emby API keys.
+
+listen: "0.0.0.0:8787"
+data_dir: "./data"
+db_path: "./data/smoothie.db"
+static_dir: "./web/dist"
+
+# Default login after first boot: admin / admin
+# Complete the setup wizard in the UI on first run.
+
+# Example IPTV source (create via UI or API):
+# type: iptv_m3u
+# config:
+#   urls:
+#     - "http://portal.example/get.php?username=USER&password=PASS&type=m3u_plus&output=ts"
+# limits:
+#   max_concurrent_upstreams: 2
+#   max_upstream_bps: 1500000
+
+# library:
+#   movies: "/media/movies"
+#   tv: "/media/tv"
+# cache:
+#   root: "./data/cache"
+#   max_bytes: 214748364800
+#   ttl: 168h
