@@ -69,14 +69,19 @@ type RefreshResult struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
-// RefreshSource fetches the first healthy portal URL and upserts channels.
+// RefreshSource dispatches by source type (iptv_m3u or hdhomerun).
 func (r *Refresher) RefreshSource(ctx context.Context, sourceID string) (*RefreshResult, error) {
 	src, err := r.DB.GetSource(sourceID)
 	if err != nil {
 		return nil, err
 	}
-	if src.Type != store.SourceTypeIPTVM3U {
-		return nil, fmt.Errorf("source: not iptv_m3u")
+	switch src.Type {
+	case store.SourceTypeHDHomeRun:
+		return r.RefreshHDHR(ctx, sourceID)
+	case store.SourceTypeIPTVM3U:
+		// continue below
+	default:
+		return nil, fmt.Errorf("source: unsupported type %q", src.Type)
 	}
 	cfg, err := ParseIPTVConfig(src.ConfigJSON)
 	if err != nil {

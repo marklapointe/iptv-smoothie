@@ -65,4 +65,10 @@ go test ./internal/hub/ ./internal/ratelimit/ -race -count=1
 
 ## Status
 
-Phase 0–1 in progress: store, auth, wizard, M3U parse/ingest, rewritten playlist, basic play proxy. Hub fan-out, VOD cache/purgatory, HDHomeRun, Emby, Angular+Playwright next.
+- GORM/SQLite, `admin`/`admin`, setup wizard
+- Multi-source IPTV M3U + **HDHomeRun** lineup import
+- Live hub fan-out + per-source concurrency limits
+- Progressive VOD **cache / purgatory / promote** (movies vs `tv/Season NN`)
+- Rewritten `playlist.m3u` + `/play/{id}`
+- Bootstrap admin UI with `data-testid` hooks (Playwright-ready)
+- Emby API refresh still next; full Angular app still next
