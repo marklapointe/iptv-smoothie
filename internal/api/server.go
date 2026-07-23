@@ -67,6 +67,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/channels/{id}/promote", s.requireAuth(s.handlePromote))
 	mux.HandleFunc("POST /api/library/roots", s.requireAuth(s.handleSetLibraryRoot))
 	mux.HandleFunc("GET /api/library/roots", s.requireAuth(s.handleListLibraryRoots))
+	mux.HandleFunc("POST /api/emby/config", s.requireAuth(s.handleEmbyConfig))
+	mux.HandleFunc("GET /api/emby/status", s.requireAuth(s.handleEmbyStatus))
 	return mux
 }
 

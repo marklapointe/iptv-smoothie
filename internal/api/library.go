@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mlapointe/smoothie/internal/cache"
+	"github.com/mlapointe/smoothie/internal/emby"
 	"github.com/mlapointe/smoothie/internal/store"
 )
 
@@ -73,7 +76,61 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "channel_id": id})
+	embyRefreshed := false
+	if url, _ := s.DB.GetSetting("emby.url"); url != "" {
+		key, _ := s.DB.GetSetting("emby.api_key")
+		if key != "" {
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+			cli := emby.New(url, key)
+			if err := cli.RefreshLibrary(ctx); err == nil {
+				embyRefreshed = true
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path": path, "channel_id": id, "emby_refreshed": embyRefreshed,
+	})
+}
+
+type embyConfigReq struct {
+	URL    string `json:"url"`
+	APIKey string `json:"api_key"`
+}
+
+func (s *Server) handleEmbyConfig(w http.ResponseWriter, r *http.Request) {
+	var req embyConfigReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.URL == "" || req.APIKey == "" {
+		writeErr(w, http.StatusBadRequest, "url and api_key required")
+		return
+	}
+	_ = s.DB.SetSetting("emby.url", strings.TrimRight(req.URL, "/"))
+	_ = s.DB.SetSetting("emby.api_key", req.APIKey)
+	cli := emby.New(req.URL, req.APIKey)
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	if err := cli.Ping(ctx); err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"saved": true, "reachable": false, "error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"saved": true, "reachable": true})
+}
+
+func (s *Server) handleEmbyStatus(w http.ResponseWriter, r *http.Request) {
+	url, err := s.DB.GetSetting("emby.url")
+	if err != nil || url == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"configured": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"configured": true,
+		"url":        url,
+		// never echo api key
+	})
 }
 
 type libraryRootReq struct {
